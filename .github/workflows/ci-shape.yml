@@ -1,0 +1,157 @@
+name: CI Shape Template
+
+on:
+  workflow_call:
+    inputs:
+      build-steps:
+        description: 'JSON array of build/test/publish steps'
+        required: true
+        type: string
+      deploy-dev-steps:
+        description: 'JSON array of dev deployment steps'
+        required: false
+        type: string
+        default: '[{"name": "Deploy to dev", "run": "echo \"hi\""}]'
+      deploy-test-steps:
+        description: 'JSON array of test deployment steps'
+        required: false
+        type: string
+        default: '[{"name": "Deploy to test", "run": "echo \"hi\""}]'
+      deploy-prod-steps:
+        description: 'JSON array of prod deployment steps'
+        required: false
+        type: string
+        default: '[{"name": "Deploy to prod", "run": "echo \"hi\""}]'
+      node-version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '18'
+      python-version:
+        description: 'Python version to use'
+        required: false
+        type: string
+        default: '3.9'
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: 'npm'
+      if: hashFiles('package.json') != ''
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+      if: hashFiles('requirements.txt') != '' || hashFiles('pyproject.toml') != ''
+      
+    # Dynamic build steps injected here
+    - name: Execute build steps
+      run: |
+        echo '${{ inputs.build-steps }}' | jq -r '.[] | @json' | while read -r step; do
+          step_name=$(echo "$step" | jq -r '.name')
+          step_run=$(echo "$step" | jq -r '.run // empty')
+          step_uses=$(echo "$step" | jq -r '.uses // empty')
+          step_with=$(echo "$step" | jq -r '.with // empty')
+          step_if=$(echo "$step" | jq -r '.if // empty')
+          
+          echo "::group::$step_name"
+          
+          # Check if condition before running
+          if [[ -n "$step_if" && "$step_if" != "null" ]]; then
+            echo "Checking condition: $step_if"
+            # For simplicity, we'll evaluate basic file existence conditions
+            if [[ "$step_if" == *"hashFiles"* ]]; then
+              if [[ "$step_if" == *"package.json"* ]] && [[ ! -f "package.json" ]]; then
+                echo "Skipping step due to condition: $step_if"
+                echo "::endgroup::"
+                continue
+              elif [[ "$step_if" == *"requirements.txt"* ]] && [[ ! -f "requirements.txt" ]] && [[ ! -f "pyproject.toml" ]]; then
+                echo "Skipping step due to condition: $step_if"
+                echo "::endgroup::"
+                continue
+              fi
+            fi
+          fi
+          
+          if [[ -n "$step_run" && "$step_run" != "null" ]]; then
+            echo "Running: $step_run"
+            eval "$step_run"
+          elif [[ -n "$step_uses" && "$step_uses" != "null" ]]; then
+            echo "Would use action: $step_uses"
+            echo "Note: Action steps need to be handled in the calling workflow"
+          fi
+          
+          echo "::endgroup::"
+        done
+
+  deploy-dev:
+    needs: build-test-publish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Execute dev deployment steps
+      run: |
+        echo '${{ inputs.deploy-dev-steps }}' | jq -r '.[] | @json' | while read -r step; do
+          step_name=$(echo "$step" | jq -r '.name')
+          step_run=$(echo "$step" | jq -r '.run')
+          
+          echo "::group::$step_name"
+          echo "Running: $step_run"
+          eval "$step_run"
+          echo "::endgroup::"
+        done
+
+  deploy-test:
+    needs: build-test-publish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Execute test deployment steps
+      run: |
+        echo '${{ inputs.deploy-test-steps }}' | jq -r '.[] | @json' | while read -r step; do
+          step_name=$(echo "$step" | jq -r '.name')
+          step_run=$(echo "$step" | jq -r '.run')
+          
+          echo "::group::$step_name"
+          echo "Running: $step_run"
+          eval "$step_run"
+          echo "::endgroup::"
+        done
+
+  deploy-prod:
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Execute prod deployment steps
+      run: |
+        echo '${{ inputs.deploy-prod-steps }}' | jq -r '.[] | @json' | while read -r step; do
+          step_name=$(echo "$step" | jq -r '.name')
+          step_run=$(echo "$step" | jq -r '.run')
+          
+          echo "::group::$step_name"
+          echo "Running: $step_run"
+          eval "$step_run"
+        done
